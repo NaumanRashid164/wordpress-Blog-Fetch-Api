@@ -17,7 +17,18 @@ class Blogs
         // Close cURL session
         curl_close($this->curl);
     }
-
+     private function extractData($array, ...$params)
+        {
+            $result = [];
+            foreach ($params as $param) {
+                foreach ($array as $data) {
+                    if (array_key_exists($param, $data)) {
+                        $result[$param][] = $data[$param];
+                    }
+                }
+            }
+            return $result;
+        }
     /**
      * Filters the response data according to specified requirements.
      * 
@@ -32,7 +43,10 @@ class Blogs
                 // Format the post data
                 $date = date("d M Y h:i A", strtotime($data["date"]));
                 $img = $data['_embedded']["wp:featuredmedia"][0]['source_url'] ?? '';
-
+                $categories = $this->extractData($data['_embedded']["wp:term"][0] ?? [], "name");
+                $author = $this->extractData($data['_embedded']["author"] ?? [], "name", "id");
+                
+                    
                 $filtered[] = [
                     "id" => $data["id"],
                     "json_link" => self::$url . "/wp-json/wp/v2/posts/" . $data["id"],
@@ -41,11 +55,15 @@ class Blogs
                     "slug" => $data["slug"],
                     "type" => $data["type"],
                     "link" => $data["link"],
+                    "commentCounts" => count($data['_embedded']["replies"][0] ?? []),
+                    "authorName" => implode(", ", $author["name"] ?? ["Admin"]),
+                    "authorID" => implode(", ", $author['id'] ?? []),
+                    "categoryNames" => implode(", ", $categories['name'] ?? ["Uncategorized"]),
                     "categories" => implode(",", $data["categories"]),
                     "tags" => implode(",", $data["tags"]),
-                    "title" => $data["title"]["rendered"],
-                    "content" => $data["content"]["rendered"],
-                    "excerpt" => $data["excerpt"]["rendered"],
+                    "title" => ($data["title"]["rendered"]),
+                    "excerpt" => ($data["excerpt"]["rendered"]),
+                    "content" => ($data["content"]["rendered"]),
                 ];
             }
         }
@@ -116,28 +134,45 @@ class Blogs
      * @return array Filtered post data
      * @throws Exception If cURL encounters an error
      */
-    public function post($filter): array
+    public function post($params = null)
     {
-        $query = is_numeric($filter) ? "/$filter?" : "?slug=$filter&";
-        $postUrl = self::$url . "/wp-json/wp/v2/posts" . $query . "_embed";
-
-        // Set cURL options for single post retrieval
-        curl_setopt_array($this->curl, [
+        $this->paramsHandle($params);
+        // $query = is_numeric($filter) ? "/" . $filter . "?" : "?slug=$filter&";
+        $postUrl = self::$url . "/wp-json/wp/v2/posts?_embed&$params";
+        curl_setopt_array($this->curl, array(
             CURLOPT_URL => $postUrl,
             CURLOPT_RETURNTRANSFER => true,
-        ]);
-
+        ));
         $response = curl_exec($this->curl);
-
-        // Handle cURL errors
         if (curl_errno($this->curl)) {
             throw new Exception(curl_error($this->curl));
         }
-
-        // Decode and filter the response data
         $posts = json_decode($response, true);
-        $posts = isset($posts[0]) ? $posts : [$posts];
-        return $this->filter_response($posts);
+        $response = $this->filter_response($posts);
+        $response["response"] = $posts[0];  //Response because we need more data for single post
+        return $response;
+    }
+
+    public function categories($params = null)
+    {
+        $this->paramsHandle($params);
+        $postUrl = self::$url . "/wp-json/wp/v2/categories?_embed&$params";
+        curl_setopt_array($this->curl, array(
+            CURLOPT_URL => $postUrl,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_TIMEOUT => 30
+        ));
+
+        $response = curl_exec($this->curl);
+
+        if (curl_errno($this->curl)) {
+            throw new Exception(curl_error($this->curl));
+        }
+        $response = json_decode($response, true);
+
+        return $response;
     }
 }
 
@@ -155,6 +190,11 @@ $params = [
     'order' => 'desc',
 ];
 $topPosts = $blogs->posts($params) ?? [];
+// Fetch Category by blogs
+$catParams = [
+	"include" => array_unique(array_column($topPosts, "categories")),
+];
+$categoriesData = $topPosts->categories($catParams);
 
 // Extract total pages and total posts count from headers
 $totalPages = $topPosts["header"]["x-wp-totalpages"][0] ?? 0;
